@@ -66,9 +66,12 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <!-- ================= INVENTÁRIO ================= -->
 <div id="tabInventario">
 <div class="card">
-<label>1. Carregue a base patrimonial (CSV)</label>
+<label>1. Base patrimonial (CSV)</label>
 <input id="file" type="file" accept=".csv,text/csv">
 <div id="stats" class="kpi"></div>
+<div style="margin-top: 10px;">
+  <button class="danger" onclick="clearCSVDatabase()" style="font-size: 12px; padding: 6px 12px;">🗑️ Apagar Base CSV Salva</button>
+</div>
 </div>
 
 <div class="card">
@@ -181,6 +184,37 @@ const db = firebase.database();
 let assets = [], records = [], current = null, html5QrCode = null;
 window.currentPhotoBase64 = '';
 
+// CARREGA A BASE CSV SALVA AO ABRIR A PÁGINA
+window.addEventListener('DOMContentLoaded', () => {
+    loadSavedCSV();
+});
+
+function loadSavedCSV() {
+    const savedAssets = localStorage.getItem('marubeni_csv_assets');
+    if (savedAssets) {
+        try {
+            assets = JSON.parse(savedAssets);
+            const totalCampos = assets.length > 0 ? Object.keys(assets[0]).length : 0;
+            document.getElementById('stats').innerHTML = `
+                <div><b>${assets.length}</b><br>ativos carregados (Salvo)</div>
+                <div><b>${totalCampos}</b><br>campos na base</div>
+            `;
+        } catch(e) {
+            console.error("Erro ao carregar base CSV salva:", e);
+        }
+    }
+}
+
+function clearCSVDatabase() {
+    if (confirm("Deseja realmente apagar a base de dados CSV salva no navegador?")) {
+        localStorage.removeItem('marubeni_csv_assets');
+        assets = [];
+        document.getElementById('stats').innerHTML = '';
+        document.getElementById('file').value = '';
+        alert("Base de dados CSV removida com sucesso!");
+    }
+}
+
 function sanitizeKey(key){
     return String(key ?? '').trim().replace(/[.#$\/\[\]]/g, '_');
 }
@@ -269,8 +303,16 @@ document.getElementById('file').addEventListener('change', e => {
             h.forEach((key,index) => { obj[key] = row[index] ?? ''; });
             return obj;
         });
+
+        // SALVA A BASE NO NAVEGADOR PARA NÃO PERDER QUANDO FECHAR
+        try {
+            localStorage.setItem('marubeni_csv_assets', JSON.stringify(assets));
+        } catch(err) {
+            console.warn("Base muito grande para salvar offline completa, usando em memória.");
+        }
+
         document.getElementById('stats').innerHTML = `<div><b>${assets.length}</b><br>ativos carregados</div><div><b>${h.length}</b><br>campos na base</div>`;
-        alert('Base CSV carregada com sucesso.');
+        alert('Base CSV carregada e salva no navegador com sucesso.');
     };
     r.readAsText(f, 'ISO-8859-1');
 });
@@ -383,7 +425,6 @@ function register(){
     const cleanRecord = sanitizeObject(rec);
     const safePlaqueta = sanitizeKey(current['Plaqueta']);
 
-    // Grava como /inventario_marubeni/Ativo/[NUMERO_DA_PLAQUETA]
     db.ref(`inventario_marubeni/Ativo/${safePlaqueta}`).set(cleanRecord).then(() => {
         alert(photoData ? '✅ Conferência e PRINT/FOTO salvos com sucesso!' : '✅ Conferência registrada com sucesso!');
         document.getElementById('code').value = '';
