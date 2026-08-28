@@ -141,7 +141,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <tr>
 <th>Plaqueta</th>
 <th>Descrição</th>
-<th>Situação Família</th>
+<th>Nome Grupo (Col O)</th>
 <th>Status</th>
 <th>Localização</th>
 <th>Data/Hora</th>
@@ -181,7 +181,7 @@ const db = firebase.database();
 
 let assets = [], records = [], current = null, html5QrCode = null;
 window.currentPhotoBase64 = '';
-window.originalHeaders = []; // Armazena os cabeçalhos originais da planilha para a exportação exata
+window.originalHeaders = []; // Armazena a ordem exata das colunas do CSV importado
 
 function sanitizeKey(key){
     return String(key ?? '').trim().replace(/[.#$\/\[\]]/g, '_');
@@ -201,7 +201,7 @@ function sanitizeObject(obj){
     return clean;
 }
 
-// SINCRONIZA A BASE GLOBAL DE ATIVOS
+// SINCRONIZA A BASE GLOBAL DE ATIVOS (CARREGADA DO CSV)
 db.ref('inventario_marubeni/Base_Ativos').on('value', snapshot => {
     const data = snapshot.val();
     assets = data ? Object.values(data) : [];
@@ -286,7 +286,22 @@ function csvParse(text){
     return rows;
 }
 
-// IMPORTAÇÃO QUE PRESERVA A ORDEM EXATA DAS COLUNAS DO ARQUIVO
+// BUSCA VALOR DE UM CAMPO ESPECÍFICO NO OBJETO (CONSIDERANDO NOMES DE CHAVES DA PLANILHA)
+function getExactValue(obj, candidates, colIndex, row) {
+    if(!obj) return '';
+    for(let candidate of candidates){
+        const matchedKey = Object.keys(obj).find(k => k.trim().toLowerCase() === candidate.toLowerCase());
+        if(matchedKey && obj[matchedKey] !== undefined && obj[matchedKey] !== null) {
+            return String(obj[matchedKey]).trim();
+        }
+    }
+    if(row && colIndex !== undefined && row[colIndex] !== undefined) {
+        return String(row[colIndex]).trim();
+    }
+    return '';
+}
+
+// IMPORTA O CSV RESPEITANDO RIGOROSAMENTE A ESTRUTURA E CABEÇALHOS DO CSV ORIGINAL
 document.getElementById('file').addEventListener('change', e => {
     const f = e.target.files[0];
     if(!f) return;
@@ -296,7 +311,6 @@ document.getElementById('file').addEventListener('change', e => {
         const rows = csvParse(text);
         if(!rows.length){ alert("CSV vazio ou inválido."); return; }
         
-        // Pega os cabeçalhos exatamente na ordem da planilha
         const headers = rows[0].map(h => h.trim());
         window.originalHeaders = headers;
         
@@ -309,9 +323,7 @@ document.getElementById('file').addEventListener('change', e => {
                 if(h) obj[h] = row[index] !== undefined ? row[index] : '';
             });
 
-            // Localiza a chave da Plaqueta
-            let plaquetaKey = headers.find(h => h.toLowerCase().includes('plaqueta')) || headers[0];
-            let plaquetaVal = obj[plaquetaKey] || row[0] || '';
+            const plaquetaVal = getExactValue(obj, ['Plaqueta', 'PLAQUETA', 'Plaqueta Patrimonio'], 0, row);
 
             if(plaquetaVal) {
                 const safeKey = sanitizeKey(plaquetaVal);
@@ -320,7 +332,7 @@ document.getElementById('file').addEventListener('change', e => {
         });
 
         db.ref('inventario_marubeni/Base_Ativos').set(baseMap).then(() => {
-            alert('Base CSV importada! Ordem das colunas mapeada com sucesso.');
+            alert('Base CSV importada! Mapeamento de colunas realizado com sucesso.');
         }).catch(err => {
             alert('Erro ao enviar base para a nuvem: ' + err.message);
         });
@@ -365,14 +377,15 @@ function compressAndPreviewImage(base64Str){
     };
 }
 
+// BUSCA O ATIVO E REFLETE OS DADOS EXATAMENTE IGUAIS À PLANILHA CSV
 function findAsset(code){
     code = code || document.getElementById('code').value;
     if(!code.trim()){ alert('Digite ou leia o código da plaqueta.'); return; }
     const n = normalize(code);
 
     current = assets.find(a => {
-        const plqKey = Object.keys(a).find(k => k.toLowerCase().includes('plaqueta')) || Object.keys(a)[0];
-        return normalize(a[plqKey]) === n || String(a[plqKey]).trim() === code.trim();
+        const plq = getExactValue(a, ['Plaqueta', 'PLAQUETA', 'Plaqueta Patrimonio']);
+        return normalize(plq) === n || String(plq).trim() === code.trim();
     });
 
     const box = document.getElementById('result');
@@ -389,15 +402,24 @@ function findAsset(code){
     }
 
     manualFields.classList.add('hidden');
-    const plqKey = Object.keys(current).find(k => k.toLowerCase().includes('plaqueta')) || Object.keys(current)[0];
-    const descKey = Object.keys(current).find(k => k.toLowerCase().includes('descri')) || Object.keys(current)[1];
-    const grupoKey = Object.keys(current).find(k => k.toLowerCase().includes('grupo') || k.toLowerCase().includes('famí')) || '';
+    
+    // EXTRAÇÃO EXATA DAS INFORMAÇÕES DA PLANILHA CSV
+    const plaquetaVal = getExactValue(current, ['Plaqueta', 'PLAQUETA']);
+    const descVal = getExactValue(current, ['Descrição do Bem', 'DESCRIÇÃO DO BEM', 'Descrição']);
+    const prodVal = getExactValue(current, ['Código Produto', 'Nome Produto', 'PRODUTO']);
+    const nomeGrupoColO = getExactValue(current, ['Nome Grupo', 'NOME GRUPO', 'Grupo']);
+    const centroCustoVal = getExactValue(current, ['Cód. Centro Custo', 'Nome Centro Custo', 'CENTRO CUSTO']);
+    const situacaoVal = getExactValue(current, ['Fantasia', 'Situação', 'SITUAÇÃO']);
 
-    document.getElementById('assetTitle').innerHTML = `Plaqueta ${current[plqKey]}`;
+    document.getElementById('assetTitle').innerHTML = `Plaqueta ${plaquetaVal}`;
     document.getElementById('assetInfo').innerHTML = `
-        <div><b>Descrição do Bem:</b> ${current[descKey] || '-'}</div>
-        <div><b>Grupo / Família:</b> <mark style="background:#e8f0fe;color:#173f63;padding:2px 8px;border-radius:4px"><b>${current[grupoKey] || '-'}</b></mark></div>
+        <div><b>Descrição do Bem:</b> ${descVal || ''}</div>
+        <div><b>Nome Produto:</b> ${prodVal || ''}</div>
+        <div><b>Nome Grupo (Coluna O - Grupo):</b> ${nomeGrupoColO || ''}</div>
+        <div><b>Nome Centro Custo:</b> ${centroCustoVal || ''}</div>
+        <div><b>Situação:</b> ${situacaoVal || ''}</div>
     `;
+
     document.getElementById('status').value = "LOCALIZADO";
     box.style.display = 'block';
 }
@@ -409,8 +431,7 @@ function register(){
 
     if(!inv || !loc){ alert('Informe o responsável e a localização.'); return; }
 
-    const plqKey = Object.keys(current).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
-    const plqVal = current[plqKey] || current['Plaqueta'];
+    const plqVal = getExactValue(current, ['Plaqueta', 'PLAQUETA']) || current['Plaqueta'];
 
     if(current.IsManual){
         const desc = document.getElementById('manualDesc').value.trim();
@@ -422,9 +443,11 @@ function register(){
     }
 
     const photoData = window.currentPhotoBase64 || '';
+    const grupoFinal = getExactValue(current, ['Nome Grupo', 'NOME GRUPO']) || 'OUTROS';
 
     const rec = {
         ...current,
+        'Nome Grupo': grupoFinal,
         'Status Inventário': document.getElementById('status').value,
         'Inventariante': inv,
         'Localização Encontrada': loc,
@@ -459,15 +482,15 @@ function register(){
 function renderLog(){
     document.getElementById('count').innerHTML = `<p><b>${records.length}</b> conferência(s) sincronizada(s)</p>`;
     document.getElementById('log').innerHTML = records.slice().reverse().map(r => {
-        const plqKey = Object.keys(r).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
-        const descKey = Object.keys(r).find(k => k.toLowerCase().includes('descri')) || 'Descrição do Bem';
-        const grupoKey = Object.keys(r).find(k => k.toLowerCase().includes('grupo') || k.toLowerCase().includes('famí')) || 'Nome Grupo';
+        const plq = getExactValue(r, ['Plaqueta', 'PLAQUETA']);
+        const desc = getExactValue(r, ['Descrição do Bem', 'DESCRIÇÃO DO BEM', 'Descrição']);
+        const grupo = getExactValue(r, ['Nome Grupo', 'NOME GRUPO']);
 
         return `
             <tr>
-            <td>${r[plqKey] || ''}</td>
-            <td>${r[descKey] || ''}</td>
-            <td><b>${r[grupoKey] || '-'}</b></td>
+            <td>${plq}</td>
+            <td>${desc}</td>
+            <td><b>${grupo}</b></td>
             <td>${r['Status Inventário'] || ''}</td>
             <td>${r['Localização Encontrada'] || ''}</td>
             <td>${r['Data Hora Inventário'] || ''}</td>
@@ -489,8 +512,7 @@ function renderGallery(){
 
     const groups = {};
     itemsWithPhoto.forEach(r => {
-        const grupoKey = Object.keys(r).find(k => k.toLowerCase().includes('grupo') || k.toLowerCase().includes('famí')) || 'Nome Grupo';
-        const grupo = r[grupoKey] || 'OUTROS';
+        const grupo = getExactValue(r, ['Nome Grupo', 'NOME GRUPO']) || 'OUTROS';
         if(!groups[grupo]) groups[grupo] = [];
         groups[grupo].push(r);
     });
@@ -513,19 +535,19 @@ function renderGallery(){
             img.onerror = () => { img.style.display = 'none'; };
             card.appendChild(img);
 
-            const plqKey = Object.keys(item).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
-            const descKey = Object.keys(item).find(k => k.toLowerCase().includes('descri')) || 'Descrição do Bem';
+            const plq = getExactValue(item, ['Plaqueta', 'PLAQUETA']);
+            const desc = getExactValue(item, ['Descrição do Bem', 'DESCRIÇÃO DO BEM', 'Descrição']);
 
             const info = document.createElement('div');
             info.className = 'info';
-            info.textContent = 'Plaqueta: ' + (item[plqKey] || '');
+            info.textContent = 'Plaqueta: ' + plq;
             card.appendChild(info);
 
-            const desc = document.createElement('div');
-            desc.className = 'muted';
-            desc.style.fontSize = '11px';
-            desc.textContent = item[descKey] || '';
-            card.appendChild(desc);
+            const descEl = document.createElement('div');
+            descEl.className = 'muted';
+            descEl.style.fontSize = '11px';
+            descEl.textContent = desc;
+            card.appendChild(descEl);
 
             grid.appendChild(card);
         });
@@ -541,11 +563,11 @@ function downloadZip(){
 
     const zip = new JSZip();
     itemsWithPhoto.forEach((item,index) => {
-        const grupoKey = Object.keys(item).find(k => k.toLowerCase().includes('grupo') || k.toLowerCase().includes('famí')) || 'Nome Grupo';
-        const grupo = String(item[grupoKey] || 'OUTROS').replace(/[/\\?%*:|"<>]/g, '_');
-        const plqKey = Object.keys(item).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
+        const grupoVal = getExactValue(item, ['Nome Grupo', 'NOME GRUPO']) || 'OUTROS';
+        const grupo = String(grupoVal).replace(/[/\\?%*:|"<>]/g, '_');
+        const plq = getExactValue(item, ['Plaqueta', 'PLAQUETA']);
         const base64Data = item['FotoBase64'].replace(/^data:image\/[^;]+;base64,/, '');
-        const filename = `${grupo}/Plaqueta_${item[plqKey]}_${index+1}.jpg`;
+        const filename = `${grupo}/Plaqueta_${plq}_${index+1}.jpg`;
         zip.file(filename, base64Data, {base64:true});
     });
 
@@ -554,24 +576,22 @@ function downloadZip(){
     });
 }
 
-// EXPORTADOR CORRIGIDO: MANTEIM A ORDEM DAS COLUNAS DA PLANILHA ORIGINAL
+// EXPORTADOR CSV: MANTÉM RIGOROSAMENTE A ESTRUTURA ORIGINAL DA PLANILHA
 function exportCSV(){
     if(!records.length){ alert('Ainda não há conferências.'); return; }
 
-    // 1. Pega todas as colunas originais do CSV importado
     let baseHeaders = window.originalHeaders && window.originalHeaders.length > 0 
         ? [...window.originalHeaders] 
         : Object.keys(assets[0] || {}).filter(k => !['Status Inventário', 'Inventariante', 'Localização Encontrada', 'Observação', 'Data Hora Inventário', 'FotoBase64', 'TemFoto', 'IsManual'].includes(k));
 
-    // 2. Colunas extras criadas durante a conferência
     const extraHeaders = ['Status Inventário', 'Inventariante', 'Localização Encontrada', 'Observação', 'Data Hora Inventário'];
-
-    // Unifica preservando rigorosamente a ordem original da planilha
     const fullHeaders = [...baseHeaders, ...extraHeaders.filter(h => !baseHeaders.includes(h))];
 
-    const esc = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
+    const esc = v => {
+        if (v === undefined || v === null || String(v).trim().toLowerCase() === 'nan') return '""';
+        return `"${String(v).replace(/"/g,'""')}"`;
+    };
     
-    // Monta o CSV mantendo cada valor em sua coluna exata
     const csvRows = [
         fullHeaders.map(esc).join(';'),
         ...records.map(r => fullHeaders.map(k => esc(r[k])).join(';'))
