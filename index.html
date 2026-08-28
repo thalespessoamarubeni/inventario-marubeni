@@ -66,11 +66,11 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <!-- ================= INVENTÁRIO ================= -->
 <div id="tabInventario">
 <div class="card">
-<label>1. Base patrimonial (CSV)</label>
+<label>1. Base patrimonial global (CSV)</label>
 <input id="file" type="file" accept=".csv,text/csv">
 <div id="stats" class="kpi"></div>
 <div style="margin-top: 10px;">
-  <button class="danger" onclick="clearCSVDatabase()" style="font-size: 12px; padding: 6px 12px;">🗑️ Apagar Base CSV Salva</button>
+  <button class="danger" onclick="clearFirebaseCSV()" style="font-size: 12px; padding: 6px 12px;">🗑️ Apagar Base CSV da Nuvem</button>
 </div>
 </div>
 
@@ -184,37 +184,6 @@ const db = firebase.database();
 let assets = [], records = [], current = null, html5QrCode = null;
 window.currentPhotoBase64 = '';
 
-// CARREGA A BASE CSV SALVA AO ABRIR A PÁGINA
-window.addEventListener('DOMContentLoaded', () => {
-    loadSavedCSV();
-});
-
-function loadSavedCSV() {
-    const savedAssets = localStorage.getItem('marubeni_csv_assets');
-    if (savedAssets) {
-        try {
-            assets = JSON.parse(savedAssets);
-            const totalCampos = assets.length > 0 ? Object.keys(assets[0]).length : 0;
-            document.getElementById('stats').innerHTML = `
-                <div><b>${assets.length}</b><br>ativos carregados (Salvo)</div>
-                <div><b>${totalCampos}</b><br>campos na base</div>
-            `;
-        } catch(e) {
-            console.error("Erro ao carregar base CSV salva:", e);
-        }
-    }
-}
-
-function clearCSVDatabase() {
-    if (confirm("Deseja realmente apagar a base de dados CSV salva no navegador?")) {
-        localStorage.removeItem('marubeni_csv_assets');
-        assets = [];
-        document.getElementById('stats').innerHTML = '';
-        document.getElementById('file').value = '';
-        alert("Base de dados CSV removida com sucesso!");
-    }
-}
-
 function sanitizeKey(key){
     return String(key ?? '').trim().replace(/[.#$\/\[\]]/g, '_');
 }
@@ -233,6 +202,22 @@ function sanitizeObject(obj){
     return clean;
 }
 
+// SINCRONIZA A BASE GLOBAL DE ATIVOS (CARREGADA DO CSV) PARA QUALQUER PLATAFORMA
+db.ref('inventario_marubeni/Base_Ativos').on('value', snapshot => {
+    const data = snapshot.val();
+    assets = data ? Object.values(data) : [];
+    if(assets.length > 0) {
+        const totalCampos = Object.keys(assets[0]).length;
+        document.getElementById('stats').innerHTML = `
+            <div><b>${assets.length}</b><br>ativos na nuvem</div>
+            <div><b>${totalCampos}</b><br>campos na base</div>
+        `;
+    } else {
+        document.getElementById('stats').innerHTML = `<div class="muted">Nenhuma base CSV ativa na nuvem.</div>`;
+    }
+});
+
+// SINCRONIZA AS CONFERÊNCIAS REALIZADAS
 db.ref('inventario_marubeni/Ativo').on('value', snapshot => {
     const data = snapshot.val();
     records = data ? Object.values(data) : [];
@@ -242,10 +227,20 @@ db.ref('inventario_marubeni/Ativo').on('value', snapshot => {
     console.error("Erro na sincronização:", error);
 });
 
+function clearFirebaseCSV() {
+    if(confirm("Deseja apagar a base global de ativos (CSV) da nuvem para todos os acessos?")){
+        db.ref('inventario_marubeni/Base_Ativos').remove().then(() => {
+            alert("Base de ativos da nuvem apagada!");
+        }).catch(err => {
+            alert("Erro ao apagar base da nuvem: " + err.message);
+        });
+    }
+}
+
 function clearFirebase(){
-    if(confirm("ATENÇÃO!\n\nIsso apagará todo o histórico da NUVEM para todos os usuários.\n\nDeseja continuar?")){
-        db.ref('inventario_marubeni').remove().then(() => {
-            alert("Banco de dados zerado com sucesso.");
+    if(confirm("ATENÇÃO!\n\nIsso apagará todo o histórico de conferências da NUVEM para todos os usuários.\n\nDeseja continuar?")){
+        db.ref('inventario_marubeni/Ativo').remove().then(() => {
+            alert("Banco de dados de conferências zerado com sucesso.");
         }).catch(err => {
             alert("Erro ao limpar: " + err.message);
         });
@@ -289,6 +284,7 @@ function csvParse(text){
     return rows;
 }
 
+// ENVIA A BASE CSV IMPORTADA PARA O FIREBASE PARA QUALQUER PLATAFORMA VER
 document.getElementById('file').addEventListener('change', e => {
     const f = e.target.files[0];
     if(!f) return;
@@ -298,21 +294,26 @@ document.getElementById('file').addEventListener('change', e => {
         const rows = csvParse(text);
         if(!rows.length){ alert("CSV vazio ou inválido."); return; }
         const h = rows.shift().map(x => x.replace(/^\uFEFF/, ''));
-        assets = rows.map(row => {
+        const parsedAssets = rows.map(row => {
             const obj = {};
             h.forEach((key,index) => { obj[key] = row[index] ?? ''; });
-            return obj;
+            return sanitizeObject(obj);
         });
 
-        // SALVA A BASE NO NAVEGADOR PARA NÃO PERDER QUANDO FECHAR
-        try {
-            localStorage.setItem('marubeni_csv_assets', JSON.stringify(assets));
-        } catch(err) {
-            console.warn("Base muito grande para salvar offline completa, usando em memória.");
-        }
+        // Envia em lote mapeado por plaqueta
+        const baseMap = {};
+        parsedAssets.forEach(item => {
+            if(item['Plaqueta']) {
+                const safePlaqueta = sanitizeKey(item['Plaqueta']);
+                baseMap[safePlaqueta] = item;
+            }
+        });
 
-        document.getElementById('stats').innerHTML = `<div><b>${assets.length}</b><br>ativos carregados</div><div><b>${h.length}</b><br>campos na base</div>`;
-        alert('Base CSV carregada e salva no navegador com sucesso.');
+        db.ref('inventario_marubeni/Base_Ativos').set(baseMap).then(() => {
+            alert('Base CSV enviada para a nuvem! Agora estará disponível no celular e em qualquer outro acesso.');
+        }).catch(err => {
+            alert('Erro ao enviar base para a nuvem: ' + err.message);
+        });
     };
     r.readAsText(f, 'ISO-8859-1');
 });
