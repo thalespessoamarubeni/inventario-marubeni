@@ -84,7 +84,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 
 <div class="card">
 <label>3. Ler plaqueta (Código de Barras)</label>
-<input id="code" placeholder="Digite ou cole o código, ex.: 000671" inputmode="numeric" onkeypress="if(event.key==='Enter') findAsset()">
+<input id="code" placeholder="Digite ou cole o código, ex.: 671" inputmode="numeric" onkeypress="if(event.key==='Enter') findAsset()">
 <button onclick="findAsset()">🔎 Buscar</button>
 <button class="secondary" onclick="startCamera()">📷 Ler pela câmera</button>
 
@@ -104,7 +104,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <label style="color:#a45c00">Preencha os dados do novo bem:</label>
 <input id="manualDesc" placeholder="Descrição do Bem">
 <div class="grid">
-<input id="manualBrand" placeholder="Marca/Modelo/Nome Grupo">
+<input id="manualBrand" placeholder="Nome Grupo / Família">
 <input id="manualSerial" placeholder="Nº de Série (opcional)">
 </div>
 </div>
@@ -143,7 +143,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <tr>
 <th>Plaqueta</th>
 <th>Descrição</th>
-<th>Nome Grupo</th>
+<th>Situação Família (Col O)</th>
 <th>Status</th>
 <th>Localização</th>
 <th>Data/Hora</th>
@@ -158,8 +158,8 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <!-- ================= GALERIA ================= -->
 <div id="tabGaleria" class="hidden">
 <div class="card">
-<h3>🖼️ Galeria de Fotos por Nome do Grupo</h3>
-<p class="muted">Fotos organizadas em pastas pelo Nome do Grupo em tempo real.</p>
+<h3>🖼️ Galeria de Fotos por Nome do Grupo (Coluna O)</h3>
+<p class="muted">Fotos organizadas em pastas pelo Nome do Grupo da planilha.</p>
 <button class="success" onclick="downloadZip()">⚡ Baixar Todas as Fotos (.ZIP)</button>
 <div id="galleryContainer"></div>
 </div>
@@ -207,10 +207,9 @@ db.ref('inventario_marubeni/Base_Ativos').on('value', snapshot => {
     const data = snapshot.val();
     assets = data ? Object.values(data) : [];
     if(assets.length > 0) {
-        const totalCampos = Object.keys(assets[0]).length;
         document.getElementById('stats').innerHTML = `
             <div><b>${assets.length}</b><br>ativos na nuvem</div>
-            <div><b>${totalCampos}</b><br>campos na base</div>
+            <div><b>33</b><br>campos mapeados</div>
         `;
     } else {
         document.getElementById('stats').innerHTML = `<div class="muted">Nenhuma base CSV ativa na nuvem.</div>`;
@@ -284,7 +283,7 @@ function csvParse(text){
     return rows;
 }
 
-// IMPORTA O CSV E FORÇA O "Nome Grupo" COMO "Situação Família"
+// IMPORTA O CSV MAPEANDO A COLUNA O (ÍNDICE 14 - "Nome Grupo") EXATAMENTE
 document.getElementById('file').addEventListener('change', e => {
     const f = e.target.files[0];
     if(!f) return;
@@ -293,15 +292,30 @@ document.getElementById('file').addEventListener('change', e => {
         const text = r.result;
         const rows = csvParse(text);
         if(!rows.length){ alert("CSV vazio ou inválido."); return; }
-        const h = rows.shift().map(x => x.replace(/^\uFEFF/, ''));
+        
+        // Remove linha do cabeçalho
+        rows.shift();
+        
         const parsedAssets = rows.map(row => {
-            const obj = {};
-            h.forEach((key,index) => { obj[key] = row[index] ?? ''; });
+            const plaquetaVal = row[0] ?? '';
+            const descVal = row[7] ?? '';
+            const prodVal = row[13] ?? '';
             
-            // GARANTE QUE 'Situação Família' RECEBA O 'Nome Grupo' (COLUNA O)
-            const grupo = obj['Nome Grupo'] || 'SEM GRUPO';
-            obj['Situação Família'] = grupo;
-            obj['Nome Grupo'] = grupo;
+            // PEGA DIRETAMENTE O VALOR DA COLUNA "O" (ÍNDICE 14) -> "Nome Grupo"
+            const nomeGrupoColO = row[14] ?? 'OUTROS';
+            const centroCustoVal = row[30] ?? row[29] ?? '0';
+            const situacaoVal = row[21] ?? row[24] ?? 'Ativo';
+
+            const obj = {
+                'Plaqueta': plaquetaVal,
+                'Descrição do Bem': descVal,
+                'Nome Produto': prodVal,
+                'Nome Grupo': nomeGrupoColO,
+                'Situação Família': nomeGrupoColO, // Força a Coluna O para a Situação Família
+                'Nome Centro Custo': centroCustoVal,
+                'Situação': situacaoVal,
+                'Nº Série': row[22] ?? ''
+            };
 
             return sanitizeObject(obj);
         });
@@ -315,7 +329,7 @@ document.getElementById('file').addEventListener('change', e => {
         });
 
         db.ref('inventario_marubeni/Base_Ativos').set(baseMap).then(() => {
-            alert('Base CSV enviada para a nuvem! Nome do Grupo ajustado com sucesso.');
+            alert('Base CSV importada! Coluna O ("Nome Grupo") configurada como Situação Família.');
         }).catch(err => {
             alert('Erro ao enviar base para a nuvem: ' + err.message);
         });
@@ -371,7 +385,8 @@ function findAsset(code){
         return;
     }
 
-    current = assets.find(a => normalize(a['Plaqueta']) === n);
+    // Procura por equivalência exata de número
+    current = assets.find(a => normalize(a['Plaqueta']) === n || String(a['Plaqueta']).trim() === code.trim());
     const box = document.getElementById('result');
     const manualFields = document.getElementById('manualFields');
 
@@ -388,13 +403,13 @@ function findAsset(code){
     manualFields.classList.add('hidden');
     document.getElementById('assetTitle').innerHTML = `Plaqueta ${current['Plaqueta']}`;
     
-    // Exibe os campos garantindo o 'Nome Grupo' como Família
-    const grupoExibicao = current['Nome Grupo'] || current['Situação Família'] || '-';
+    // EXIBE OS CAMPOS CORRETAMENTE COM A COLUNA O DESTACADA
+    const grupoColO = current['Nome Grupo'] || current['Situação Família'] || '-';
     
     document.getElementById('assetInfo').innerHTML = `
         <div><b>Descrição do Bem:</b> ${current['Descrição do Bem'] || '-'}</div>
         <div><b>Nome Produto:</b> ${current['Nome Produto'] || '-'}</div>
-        <div><b>Situação Família (Nome Grupo):</b> <mark style="background:#e8f0fe;padding:2px 6px;border-radius:4px"><b>${grupoExibicao}</b></mark></div>
+        <div><b>Situação Família (Coluna O - Grupo):</b> <mark style="background:#e8f0fe;color:#173f63;padding:2px 8px;border-radius:4px"><b>${grupoColO}</b></mark></div>
         <div><b>Nome Centro Custo:</b> ${current['Nome Centro Custo'] || '0'}</div>
         <div><b>Situação:</b> ${current['Situação'] || 'Ativo'}</div>
         ${current['Nº Série'] ? `<div><b>Nº Série:</b> ${current['Nº Série']}</div>` : ''}
@@ -478,7 +493,7 @@ function renderLog(){
     `).join('');
 }
 
-// RENDERIZA A GALERIA SEPARANDO AS PASTAS/BLOCOS PELO "NOME DO GRUPO"
+// MONTA A GALERIA SEPARANDO EM PASTAS PELO NOME DO GRUPO (COLUNA O)
 function renderGallery(){
     const container = document.getElementById('galleryContainer');
     container.innerHTML = '';
@@ -500,7 +515,7 @@ function renderGallery(){
     for(const grupo in groups){
         const block = document.createElement('div');
         block.className = 'family-block';
-        block.innerHTML = `<div class="family-title">📂 Pasta Grupo: ${grupo}</div>`;
+        block.innerHTML = `<div class="family-title">📂 Pasta Grupo (Col O): ${grupo}</div>`;
 
         const grid = document.createElement('div');
         grid.className = 'gallery-grid';
@@ -534,7 +549,6 @@ function renderGallery(){
     }
 }
 
-// CRIA O .ZIP ORGANIZANDO AS PASTAS INTERNAS PELO "NOME DO GRUPO"
 function downloadZip(){
     const itemsWithPhoto = records.filter(r => r['FotoBase64'] && String(r['FotoBase64']).startsWith('data:image/'));
     if(!itemsWithPhoto.length){ alert('Não há fotos para exportar.'); return; }
