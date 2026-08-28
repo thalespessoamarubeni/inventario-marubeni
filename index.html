@@ -297,6 +297,12 @@ document.getElementById('file').addEventListener('change', e => {
         const parsedAssets = rows.map(row => {
             const obj = {};
             h.forEach((key,index) => { obj[key] = row[index] ?? ''; });
+            
+            // ATRIBUI A COLUNA O ("Nome Grupo") PARA A "Situação Família"
+            if(obj['Nome Grupo']) {
+                obj['Situação Família'] = obj['Nome Grupo'];
+            }
+            
             return sanitizeObject(obj);
         });
 
@@ -413,7 +419,7 @@ function register(){
 
     const rec = {
         ...current,
-        'Situação Família': current['Situação Família'] || current['Nome Centro Custo'] || 'GERAL',
+        'Situação Família': current['Nome Grupo'] || current['Situação Família'] || current['Nome Centro Custo'] || 'GERAL',
         'Status Inventário': document.getElementById('status').value,
         'Inventariante': inv,
         'Localização Encontrada': loc,
