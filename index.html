@@ -104,7 +104,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <label style="color:#a45c00">Preencha os dados do novo bem:</label>
 <input id="manualDesc" placeholder="Descrição do Bem">
 <div class="grid">
-<input id="manualBrand" placeholder="Marca/Modelo/Situação Família">
+<input id="manualBrand" placeholder="Marca/Modelo/Nome Grupo">
 <input id="manualSerial" placeholder="Nº de Série (opcional)">
 </div>
 </div>
@@ -143,7 +143,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <tr>
 <th>Plaqueta</th>
 <th>Descrição</th>
-<th>Situação Família</th>
+<th>Nome Grupo</th>
 <th>Status</th>
 <th>Localização</th>
 <th>Data/Hora</th>
@@ -158,8 +158,8 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <!-- ================= GALERIA ================= -->
 <div id="tabGaleria" class="hidden">
 <div class="card">
-<h3>🖼️ Galeria de Fotos por Situação Família</h3>
-<p class="muted">Fotos sincronizadas em tempo real pela nuvem.</p>
+<h3>🖼️ Galeria de Fotos por Nome do Grupo</h3>
+<p class="muted">Fotos organizadas em pastas pelo Nome do Grupo em tempo real.</p>
 <button class="success" onclick="downloadZip()">⚡ Baixar Todas as Fotos (.ZIP)</button>
 <div id="galleryContainer"></div>
 </div>
@@ -202,7 +202,7 @@ function sanitizeObject(obj){
     return clean;
 }
 
-// SINCRONIZA A BASE GLOBAL DE ATIVOS (CARREGADA DO CSV) PARA QUALQUER PLATAFORMA
+// SINCRONIZA A BASE GLOBAL DE ATIVOS (CARREGADA DO CSV)
 db.ref('inventario_marubeni/Base_Ativos').on('value', snapshot => {
     const data = snapshot.val();
     assets = data ? Object.values(data) : [];
@@ -284,7 +284,7 @@ function csvParse(text){
     return rows;
 }
 
-// ENVIA A BASE CSV IMPORTADA PARA O FIREBASE PARA QUALQUER PLATAFORMA VER
+// IMPORTA O CSV E FORÇA O "Nome Grupo" COMO "Situação Família"
 document.getElementById('file').addEventListener('change', e => {
     const f = e.target.files[0];
     if(!f) return;
@@ -298,15 +298,14 @@ document.getElementById('file').addEventListener('change', e => {
             const obj = {};
             h.forEach((key,index) => { obj[key] = row[index] ?? ''; });
             
-            // ATRIBUI A COLUNA O ("Nome Grupo") PARA A "Situação Família"
-            if(obj['Nome Grupo']) {
-                obj['Situação Família'] = obj['Nome Grupo'];
-            }
-            
+            // GARANTE QUE 'Situação Família' RECEBA O 'Nome Grupo' (COLUNA O)
+            const grupo = obj['Nome Grupo'] || 'SEM GRUPO';
+            obj['Situação Família'] = grupo;
+            obj['Nome Grupo'] = grupo;
+
             return sanitizeObject(obj);
         });
 
-        // Envia em lote mapeado por plaqueta
         const baseMap = {};
         parsedAssets.forEach(item => {
             if(item['Plaqueta']) {
@@ -316,7 +315,7 @@ document.getElementById('file').addEventListener('change', e => {
         });
 
         db.ref('inventario_marubeni/Base_Ativos').set(baseMap).then(() => {
-            alert('Base CSV enviada para a nuvem! Agora estará disponível no celular e em qualquer outro acesso.');
+            alert('Base CSV enviada para a nuvem! Nome do Grupo ajustado com sucesso.');
         }).catch(err => {
             alert('Erro ao enviar base para a nuvem: ' + err.message);
         });
@@ -388,8 +387,18 @@ function findAsset(code){
 
     manualFields.classList.add('hidden');
     document.getElementById('assetTitle').innerHTML = `Plaqueta ${current['Plaqueta']}`;
-    const fields = ['Descrição do Bem', 'Nome Produto', 'Situação Família', 'Nome Centro Custo', 'Situação', 'Nº Série'];
-    document.getElementById('assetInfo').innerHTML = fields.filter(k => current[k]).map(k => `<div><b>${k}:</b> ${current[k]}</div>`).join('');
+    
+    // Exibe os campos garantindo o 'Nome Grupo' como Família
+    const grupoExibicao = current['Nome Grupo'] || current['Situação Família'] || '-';
+    
+    document.getElementById('assetInfo').innerHTML = `
+        <div><b>Descrição do Bem:</b> ${current['Descrição do Bem'] || '-'}</div>
+        <div><b>Nome Produto:</b> ${current['Nome Produto'] || '-'}</div>
+        <div><b>Situação Família (Nome Grupo):</b> <mark style="background:#e8f0fe;padding:2px 6px;border-radius:4px"><b>${grupoExibicao}</b></mark></div>
+        <div><b>Nome Centro Custo:</b> ${current['Nome Centro Custo'] || '0'}</div>
+        <div><b>Situação:</b> ${current['Situação'] || 'Ativo'}</div>
+        ${current['Nº Série'] ? `<div><b>Nº Série:</b> ${current['Nº Série']}</div>` : ''}
+    `;
     document.getElementById('status').value = "LOCALIZADO";
     box.style.display = 'block';
 }
@@ -410,16 +419,20 @@ function register(){
     if(current.IsManual){
         const desc = document.getElementById('manualDesc').value.trim();
         if(!desc){ alert('Informe a Descrição do Bem.'); return; }
+        const grupoManual = document.getElementById('manualBrand').value.trim() || 'BENS NÃO CADASTRADOS (AVULSOS)';
         current['Descrição do Bem'] = desc;
-        current['Situação Família'] = document.getElementById('manualBrand').value.trim() || 'BENS NÃO CADASTRADOS (AVULSOS)';
+        current['Nome Grupo'] = grupoManual;
+        current['Situação Família'] = grupoManual;
         current['Nº Série'] = document.getElementById('manualSerial').value.trim();
     }
 
     const photoData = window.currentPhotoBase64 || '';
+    const grupoFinal = current['Nome Grupo'] || current['Situação Família'] || 'OUTROS';
 
     const rec = {
         ...current,
-        'Situação Família': current['Nome Grupo'] || current['Situação Família'] || current['Nome Centro Custo'] || 'GERAL',
+        'Nome Grupo': grupoFinal,
+        'Situação Família': grupoFinal,
         'Status Inventário': document.getElementById('status').value,
         'Inventariante': inv,
         'Localização Encontrada': loc,
@@ -457,7 +470,7 @@ function renderLog(){
         <tr>
         <td>${r['Plaqueta'] || ''}</td>
         <td>${r['Descrição do Bem'] || r['Nome Produto'] || ''}</td>
-        <td>${r['Situação Família'] || '-'}</td>
+        <td><b>${r['Nome Grupo'] || r['Situação Família'] || '-'}</b></td>
         <td>${r['Status Inventário'] || ''}</td>
         <td>${r['Localização Encontrada'] || ''}</td>
         <td>${r['Data Hora Inventário'] || ''}</td>
@@ -465,6 +478,7 @@ function renderLog(){
     `).join('');
 }
 
+// RENDERIZA A GALERIA SEPARANDO AS PASTAS/BLOCOS PELO "NOME DO GRUPO"
 function renderGallery(){
     const container = document.getElementById('galleryContainer');
     container.innerHTML = '';
@@ -478,20 +492,20 @@ function renderGallery(){
 
     const groups = {};
     itemsWithPhoto.forEach(r => {
-        const fam = r['Situação Família'] || 'GERAL';
-        if(!groups[fam]) groups[fam] = [];
-        groups[fam].push(r);
+        const grupo = r['Nome Grupo'] || r['Situação Família'] || 'OUTROS / SEM GRUPO';
+        if(!groups[grupo]) groups[grupo] = [];
+        groups[grupo].push(r);
     });
 
-    for(const fam in groups){
+    for(const grupo in groups){
         const block = document.createElement('div');
         block.className = 'family-block';
-        block.innerHTML = `<div class="family-title">📂 Família / Categoria: ${fam}</div>`;
+        block.innerHTML = `<div class="family-title">📂 Pasta Grupo: ${grupo}</div>`;
 
         const grid = document.createElement('div');
         grid.className = 'gallery-grid';
 
-        groups[fam].forEach(item => {
+        groups[grupo].forEach(item => {
             const card = document.createElement('div');
             card.className = 'gallery-card';
 
@@ -520,15 +534,16 @@ function renderGallery(){
     }
 }
 
+// CRIA O .ZIP ORGANIZANDO AS PASTAS INTERNAS PELO "NOME DO GRUPO"
 function downloadZip(){
     const itemsWithPhoto = records.filter(r => r['FotoBase64'] && String(r['FotoBase64']).startsWith('data:image/'));
     if(!itemsWithPhoto.length){ alert('Não há fotos para exportar.'); return; }
 
     const zip = new JSZip();
     itemsWithPhoto.forEach((item,index) => {
-        const fam = (item['Situação Família'] || 'GERAL').replace(/[/\\?%*:|"<>]/g, '_');
+        const grupo = (item['Nome Grupo'] || item['Situação Família'] || 'OUTROS').replace(/[/\\?%*:|"<>]/g, '_');
         const base64Data = item['FotoBase64'].replace(/^data:image\/[^;]+;base64,/, '');
-        const filename = `${fam}/Plaqueta_${item['Plaqueta']}_${index+1}.jpg`;
+        const filename = `${grupo}/Plaqueta_${item['Plaqueta']}_${index+1}.jpg`;
         zip.file(filename, base64Data, {base64:true});
     });
 
