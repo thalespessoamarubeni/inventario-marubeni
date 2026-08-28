@@ -141,7 +141,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <tr>
 <th>Plaqueta</th>
 <th>Descrição</th>
-<th>Situação Família (Grupo)</th>
+<th>Situação Família</th>
 <th>Status</th>
 <th>Localização</th>
 <th>Data/Hora</th>
@@ -181,6 +181,7 @@ const db = firebase.database();
 
 let assets = [], records = [], current = null, html5QrCode = null;
 window.currentPhotoBase64 = '';
+window.originalHeaders = []; // Armazena os cabeçalhos originais da planilha para a exportação exata
 
 function sanitizeKey(key){
     return String(key ?? '').trim().replace(/[.#$\/\[\]]/g, '_');
@@ -200,15 +201,18 @@ function sanitizeObject(obj){
     return clean;
 }
 
-// SINCRONIZA A BASE GLOBAL DE ATIVOS (CARREGADA DO CSV)
+// SINCRONIZA A BASE GLOBAL DE ATIVOS
 db.ref('inventario_marubeni/Base_Ativos').on('value', snapshot => {
     const data = snapshot.val();
     assets = data ? Object.values(data) : [];
     if(assets.length > 0) {
-        const totalCols = Object.keys(assets[0] || {}).length;
+        const firstObj = assets[0];
+        window.originalHeaders = Object.keys(firstObj).filter(k => 
+            !['Status Inventário', 'Inventariante', 'Localização Encontrada', 'Observação', 'Data Hora Inventário', 'FotoBase64', 'TemFoto', 'IsManual'].includes(k)
+        );
         document.getElementById('stats').innerHTML = `
             <div><b>${assets.length}</b><br>ativos na nuvem</div>
-            <div><b>${totalCols}</b><br>campos mapeados</div>
+            <div><b>${window.originalHeaders.length}</b><br>campos originais</div>
         `;
     } else {
         document.getElementById('stats').innerHTML = `<div class="muted">Nenhuma base CSV ativa na nuvem.</div>`;
@@ -282,19 +286,7 @@ function csvParse(text){
     return rows;
 }
 
-// BUSCA UM VALOR DE CAMPO NO ATIVO CONSIDERANDO VARIAÇÕES DE NOME DA COLUNA
-function getFieldValue(asset, possibleKeys, fallbackIndexRow, rawRow) {
-    if (!asset) return '';
-    for (let key of possibleKeys) {
-        if (asset[key] !== undefined && asset[key] !== null) return String(asset[key]);
-    }
-    if (rawRow && fallbackIndexRow !== undefined && rawRow[fallbackIndexRow] !== undefined) {
-        return String(rawRow[fallbackIndexRow]);
-    }
-    return '';
-}
-
-// IMPORTA O CSV MAPEANDO DINAMICAMENTE TODAS AS COLUNAS DO CABEÇALHO DA PLANILHA
+// IMPORTAÇÃO QUE PRESERVA A ORDEM EXATA DAS COLUNAS DO ARQUIVO
 document.getElementById('file').addEventListener('change', e => {
     const f = e.target.files[0];
     if(!f) return;
@@ -304,47 +296,31 @@ document.getElementById('file').addEventListener('change', e => {
         const rows = csvParse(text);
         if(!rows.length){ alert("CSV vazio ou inválido."); return; }
         
-        // Pega os nomes das colunas da primeira linha (Cabeçalho)
+        // Pega os cabeçalhos exatamente na ordem da planilha
         const headers = rows[0].map(h => h.trim());
+        window.originalHeaders = headers;
         
-        // Linhas de dados (remove cabeçalho)
         const dataRows = rows.slice(1);
-        
         const baseMap = {};
+
         dataRows.forEach(row => {
             const obj = {};
-            
-            // Associa cada célula ao nome exato da coluna no cabeçalho
-            headers.forEach((headerName, index) => {
-                if(headerName) {
-                    obj[headerName] = row[index] ?? '';
-                }
+            headers.forEach((h, index) => {
+                if(h) obj[h] = row[index] !== undefined ? row[index] : '';
             });
 
-            // Localiza a Plaqueta (Plaqueta / Código / Plaqueta Patrimonio)
-            const plaquetaVal = getFieldValue(obj, ['Plaqueta', 'PLAQUETA', 'Plaqueta Patrimonio', 'Codigo', 'CÓDIGO'], 0, row);
-            
-            if(plaquetaVal) {
-                // Identifica e padroniza o Nome Grupo (Coluna O / Família)
-                const grupoVal = getFieldValue(obj, ['Nome Grupo', 'NOME GRUPO', 'Situação Família', 'SITUAÇÃO FAMÍLIA', 'Grupo', 'GRUPO'], 14, row) || 'OUTROS';
-                
-                // Normaliza e garante compatibilidade de nomes de chaves
-                obj['Plaqueta'] = plaquetaVal;
-                obj['Descrição do Bem'] = getFieldValue(obj, ['Descrição do Bem', 'DESCRIÇÃO DO BEM', 'Descrição', 'DESCRIÇÃO'], 7, row);
-                obj['Nome Produto'] = getFieldValue(obj, ['Nome Produto', 'NOME PRODUTO', 'Produto'], 13, row);
-                obj['Nome Grupo'] = grupoVal;
-                obj['Situação Família'] = grupoVal;
-                obj['Nome Centro Custo'] = getFieldValue(obj, ['Nome Centro Custo', 'NOME CENTRO CUSTO', 'Centro Custo', 'Centro de Custo'], 30, row) || '0';
-                obj['Situação'] = getFieldValue(obj, ['Situação', 'SITUAÇÃO', 'Situacao'], 21, row) || 'Ativo';
-                obj['Nº Série'] = getFieldValue(obj, ['Nº Série', 'Nº SÉRIE', 'Num Serie', 'NÚMERO DE SÉRIE'], 22, row);
+            // Localiza a chave da Plaqueta
+            let plaquetaKey = headers.find(h => h.toLowerCase().includes('plaqueta')) || headers[0];
+            let plaquetaVal = obj[plaquetaKey] || row[0] || '';
 
-                const safePlaqueta = sanitizeKey(plaquetaVal);
-                baseMap[safePlaqueta] = sanitizeObject(obj);
+            if(plaquetaVal) {
+                const safeKey = sanitizeKey(plaquetaVal);
+                baseMap[safeKey] = sanitizeObject(obj);
             }
         });
 
         db.ref('inventario_marubeni/Base_Ativos').set(baseMap).then(() => {
-            alert('Base CSV importada com sucesso! Todas as colunas foram mapeadas corretamente.');
+            alert('Base CSV importada! Ordem das colunas mapeada com sucesso.');
         }).catch(err => {
             alert('Erro ao enviar base para a nuvem: ' + err.message);
         });
@@ -393,17 +369,10 @@ function findAsset(code){
     code = code || document.getElementById('code').value;
     if(!code.trim()){ alert('Digite ou leia o código da plaqueta.'); return; }
     const n = normalize(code);
-    const jaLido = records.find(r => normalize(getFieldValue(r, ['Plaqueta', 'PLAQUETA'])) === n);
 
-    if(jaLido){
-        alert(`⚠️ A plaqueta ${code} já foi conferida anteriormente!`);
-        return;
-    }
-
-    // Procura por equivalência exata de número
     current = assets.find(a => {
-        const plq = getFieldValue(a, ['Plaqueta', 'PLAQUETA', 'Plaqueta Patrimonio']);
-        return normalize(plq) === n || String(plq).trim() === code.trim();
+        const plqKey = Object.keys(a).find(k => k.toLowerCase().includes('plaqueta')) || Object.keys(a)[0];
+        return normalize(a[plqKey]) === n || String(a[plqKey]).trim() === code.trim();
     });
 
     const box = document.getElementById('result');
@@ -420,24 +389,14 @@ function findAsset(code){
     }
 
     manualFields.classList.add('hidden');
-    const plaquetaExibicao = getFieldValue(current, ['Plaqueta', 'PLAQUETA']);
-    document.getElementById('assetTitle').innerHTML = `Plaqueta ${plaquetaExibicao}`;
-    
-    // EXIBE OS CAMPOS OBTIDOS DINAMICAMENTE
-    const descExib = getFieldValue(current, ['Descrição do Bem', 'DESCRIÇÃO DO BEM', 'Descrição']) || '-';
-    const prodExib = getFieldValue(current, ['Nome Produto', 'NOME PRODUTO', 'Produto']) || '-';
-    const grupoExib = getFieldValue(current, ['Nome Grupo', 'NOME GRUPO', 'Situação Família', 'Grupo']) || '-';
-    const ccExib = getFieldValue(current, ['Nome Centro Custo', 'NOME CENTRO CUSTO', 'Centro Custo']) || '0';
-    const sitExib = getFieldValue(current, ['Situação', 'SITUAÇÃO']) || 'Ativo';
-    const numSerie = getFieldValue(current, ['Nº Série', 'Nº SÉRIE', 'Num Serie']);
+    const plqKey = Object.keys(current).find(k => k.toLowerCase().includes('plaqueta')) || Object.keys(current)[0];
+    const descKey = Object.keys(current).find(k => k.toLowerCase().includes('descri')) || Object.keys(current)[1];
+    const grupoKey = Object.keys(current).find(k => k.toLowerCase().includes('grupo') || k.toLowerCase().includes('famí')) || '';
 
+    document.getElementById('assetTitle').innerHTML = `Plaqueta ${current[plqKey]}`;
     document.getElementById('assetInfo').innerHTML = `
-        <div><b>Descrição do Bem:</b> ${descExib}</div>
-        <div><b>Nome Produto:</b> ${prodExib}</div>
-        <div><b>Grupo / Família:</b> <mark style="background:#e8f0fe;color:#173f63;padding:2px 8px;border-radius:4px"><b>${grupoExib}</b></mark></div>
-        <div><b>Nome Centro Custo:</b> ${ccExib}</div>
-        <div><b>Situação:</b> ${sitExib}</div>
-        ${numSerie ? `<div><b>Nº Série:</b> ${numSerie}</div>` : ''}
+        <div><b>Descrição do Bem:</b> ${current[descKey] || '-'}</div>
+        <div><b>Grupo / Família:</b> <mark style="background:#e8f0fe;color:#173f63;padding:2px 8px;border-radius:4px"><b>${current[grupoKey] || '-'}</b></mark></div>
     `;
     document.getElementById('status').value = "LOCALIZADO";
     box.style.display = 'block';
@@ -449,31 +408,23 @@ function register(){
     const loc = document.getElementById('location').value.trim();
 
     if(!inv || !loc){ alert('Informe o responsável e a localização.'); return; }
-    const plq = getFieldValue(current, ['Plaqueta', 'PLAQUETA']);
-    const n = normalize(plq);
 
-    if(records.some(r => normalize(getFieldValue(r, ['Plaqueta', 'PLAQUETA'])) === n)){
-        alert(`⚠️ A plaqueta ${plq} já foi inserida no histórico!`);
-        return;
-    }
+    const plqKey = Object.keys(current).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
+    const plqVal = current[plqKey] || current['Plaqueta'];
 
     if(current.IsManual){
         const desc = document.getElementById('manualDesc').value.trim();
         if(!desc){ alert('Informe a Descrição do Bem.'); return; }
-        const grupoManual = document.getElementById('manualBrand').value.trim() || 'BENS NÃO CADASTRADOS (AVULSOS)';
+        const grupoManual = document.getElementById('manualBrand').value.trim() || 'OUTROS';
         current['Descrição do Bem'] = desc;
         current['Nome Grupo'] = grupoManual;
-        current['Situação Família'] = grupoManual;
         current['Nº Série'] = document.getElementById('manualSerial').value.trim();
     }
 
     const photoData = window.currentPhotoBase64 || '';
-    const grupoFinal = getFieldValue(current, ['Nome Grupo', 'NOME GRUPO', 'Situação Família']) || 'OUTROS';
 
     const rec = {
         ...current,
-        'Nome Grupo': grupoFinal,
-        'Situação Família': grupoFinal,
         'Status Inventário': document.getElementById('status').value,
         'Inventariante': inv,
         'Localização Encontrada': loc,
@@ -484,10 +435,10 @@ function register(){
     };
 
     const cleanRecord = sanitizeObject(rec);
-    const safePlaqueta = sanitizeKey(plq);
+    const safePlaqueta = sanitizeKey(plqVal);
 
     db.ref(`inventario_marubeni/Ativo/${safePlaqueta}`).set(cleanRecord).then(() => {
-        alert(photoData ? '✅ Conferência e PRINT/FOTO salvos com sucesso!' : '✅ Conferência registrada com sucesso!');
+        alert(photoData ? '✅ Conferência e FOTO salvos com sucesso!' : '✅ Conferência registrada com sucesso!');
         document.getElementById('code').value = '';
         document.getElementById('result').style.display = 'none';
         document.getElementById('manualDesc').value = '';
@@ -508,27 +459,23 @@ function register(){
 function renderLog(){
     document.getElementById('count').innerHTML = `<p><b>${records.length}</b> conferência(s) sincronizada(s)</p>`;
     document.getElementById('log').innerHTML = records.slice().reverse().map(r => {
-        const plq = getFieldValue(r, ['Plaqueta', 'PLAQUETA']);
-        const desc = getFieldValue(r, ['Descrição do Bem', 'DESCRIÇÃO DO BEM', 'Descrição', 'Nome Produto']);
-        const grupo = getFieldValue(r, ['Nome Grupo', 'NOME GRUPO', 'Situação Família']) || '-';
-        const st = r['Status Inventário'] || '';
-        const loc = r['Localização Encontrada'] || '';
-        const dt = r['Data Hora Inventário'] || '';
+        const plqKey = Object.keys(r).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
+        const descKey = Object.keys(r).find(k => k.toLowerCase().includes('descri')) || 'Descrição do Bem';
+        const grupoKey = Object.keys(r).find(k => k.toLowerCase().includes('grupo') || k.toLowerCase().includes('famí')) || 'Nome Grupo';
 
         return `
             <tr>
-            <td>${plq}</td>
-            <td>${desc}</td>
-            <td><b>${grupo}</b></td>
-            <td>${st}</td>
-            <td>${loc}</td>
-            <td>${dt}</td>
+            <td>${r[plqKey] || ''}</td>
+            <td>${r[descKey] || ''}</td>
+            <td><b>${r[grupoKey] || '-'}</b></td>
+            <td>${r['Status Inventário'] || ''}</td>
+            <td>${r['Localização Encontrada'] || ''}</td>
+            <td>${r['Data Hora Inventário'] || ''}</td>
             </tr>
         `;
     }).join('');
 }
 
-// MONTA A GALERIA SEPARANDO EM PASTAS PELO NOME DO GRUPO
 function renderGallery(){
     const container = document.getElementById('galleryContainer');
     container.innerHTML = '';
@@ -536,13 +483,14 @@ function renderGallery(){
     const itemsWithPhoto = records.filter(r => r['FotoBase64'] && String(r['FotoBase64']).startsWith('data:image/'));
 
     if(!itemsWithPhoto.length){
-        container.innerHTML = `<p class="muted" style="margin-top:15px">📷 Nenhuma foto/print registrado até o momento.</p>`;
+        container.innerHTML = `<p class="muted" style="margin-top:15px">📷 Nenhuma foto registrada até o momento.</p>`;
         return;
     }
 
     const groups = {};
     itemsWithPhoto.forEach(r => {
-        const grupo = getFieldValue(r, ['Nome Grupo', 'NOME GRUPO', 'Situação Família']) || 'OUTROS / SEM GRUPO';
+        const grupoKey = Object.keys(r).find(k => k.toLowerCase().includes('grupo') || k.toLowerCase().includes('famí')) || 'Nome Grupo';
+        const grupo = r[grupoKey] || 'OUTROS';
         if(!groups[grupo]) groups[grupo] = [];
         groups[grupo].push(r);
     });
@@ -565,19 +513,19 @@ function renderGallery(){
             img.onerror = () => { img.style.display = 'none'; };
             card.appendChild(img);
 
-            const plq = getFieldValue(item, ['Plaqueta', 'PLAQUETA']);
-            const desc = getFieldValue(item, ['Descrição do Bem', 'DESCRIÇÃO DO BEM', 'Descrição', 'Nome Produto']);
+            const plqKey = Object.keys(item).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
+            const descKey = Object.keys(item).find(k => k.toLowerCase().includes('descri')) || 'Descrição do Bem';
 
             const info = document.createElement('div');
             info.className = 'info';
-            info.textContent = 'Plaqueta: ' + plq;
+            info.textContent = 'Plaqueta: ' + (item[plqKey] || '');
             card.appendChild(info);
 
-            const descEl = document.createElement('div');
-            descEl.className = 'muted';
-            descEl.style.fontSize = '11px';
-            descEl.textContent = desc;
-            card.appendChild(descEl);
+            const desc = document.createElement('div');
+            desc.className = 'muted';
+            desc.style.fontSize = '11px';
+            desc.textContent = item[descKey] || '';
+            card.appendChild(desc);
 
             grid.appendChild(card);
         });
@@ -593,11 +541,11 @@ function downloadZip(){
 
     const zip = new JSZip();
     itemsWithPhoto.forEach((item,index) => {
-        const grupoVal = getFieldValue(item, ['Nome Grupo', 'NOME GRUPO', 'Situação Família']) || 'OUTROS';
-        const grupo = grupoVal.replace(/[/\\?%*:|"<>]/g, '_');
-        const plq = getFieldValue(item, ['Plaqueta', 'PLAQUETA']);
+        const grupoKey = Object.keys(item).find(k => k.toLowerCase().includes('grupo') || k.toLowerCase().includes('famí')) || 'Nome Grupo';
+        const grupo = String(item[grupoKey] || 'OUTROS').replace(/[/\\?%*:|"<>]/g, '_');
+        const plqKey = Object.keys(item).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
         const base64Data = item['FotoBase64'].replace(/^data:image\/[^;]+;base64,/, '');
-        const filename = `${grupo}/Plaqueta_${plq}_${index+1}.jpg`;
+        const filename = `${grupo}/Plaqueta_${item[plqKey]}_${index+1}.jpg`;
         zip.file(filename, base64Data, {base64:true});
     });
 
@@ -606,15 +554,33 @@ function downloadZip(){
     });
 }
 
+// EXPORTADOR CORRIGIDO: MANTEIM A ORDEM DAS COLUNAS DA PLANILHA ORIGINAL
 function exportCSV(){
     if(!records.length){ alert('Ainda não há conferências.'); return; }
-    const keys = [...new Set(records.flatMap(x => Object.keys(x)))].filter(k => k !== 'IsManual' && k !== 'FotoBase64');
-    const esc = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
-    const csv = [keys.join(';'), ...records.map(r => keys.map(k => esc(r[k])).join(';'))].join('\n');
 
+    // 1. Pega todas as colunas originais do CSV importado
+    let baseHeaders = window.originalHeaders && window.originalHeaders.length > 0 
+        ? [...window.originalHeaders] 
+        : Object.keys(assets[0] || {}).filter(k => !['Status Inventário', 'Inventariante', 'Localização Encontrada', 'Observação', 'Data Hora Inventário', 'FotoBase64', 'TemFoto', 'IsManual'].includes(k));
+
+    // 2. Colunas extras criadas durante a conferência
+    const extraHeaders = ['Status Inventário', 'Inventariante', 'Localização Encontrada', 'Observação', 'Data Hora Inventário'];
+
+    // Unifica preservando rigorosamente a ordem original da planilha
+    const fullHeaders = [...baseHeaders, ...extraHeaders.filter(h => !baseHeaders.includes(h))];
+
+    const esc = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
+    
+    // Monta o CSV mantendo cada valor em sua coluna exata
+    const csvRows = [
+        fullHeaders.map(esc).join(';'),
+        ...records.map(r => fullHeaders.map(k => esc(r[k])).join(';'))
+    ];
+
+    const csvContent = csvRows.join('\n');
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob(["\uFEFF" + csv], {type:'text/csv;charset=utf-8'}));
-    a.download = 'Resultado_Inventario.csv';
+    a.href = URL.createObjectURL(new Blob(["\uFEFF" + csvContent], {type:'text/csv;charset=utf-8'}));
+    a.download = 'Resultado_Inventario_Alinhado.csv';
     a.click();
 }
 
