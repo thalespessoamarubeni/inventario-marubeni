@@ -10,6 +10,8 @@
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<!-- PapaParse para leitura perfeita de CSVs -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 
 <style>
 body{font-family:Arial,sans-serif;margin:0;background:#f4f6f8;color:#1d2733}
@@ -141,7 +143,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <tr>
 <th>Plaqueta</th>
 <th>Descrição</th>
-<th>Nome Grupo </th>
+<th>Nome Grupo</th>
 <th>Status</th>
 <th>Localização</th>
 <th>Data/Hora</th>
@@ -196,7 +198,7 @@ function sanitizeObject(obj){
         if(value !== null && typeof value === 'object' && !Array.isArray(value)){
             value = sanitizeObject(value);
         }
-        clean[safeKey] = value;
+        clean[safeKey] = value !== undefined && value !== null ? String(value).trim() : '';
     });
     return clean;
 }
@@ -268,76 +270,51 @@ function normalize(v){
     return String(v ?? '').trim().replace(/^0+/, '') || '0';
 }
 
-function csvParse(text){
-    const rows = []; let row = []; let cell = ''; let q = false;
-    for(let i=0;i<text.length;i++){
-        const c = text[i], n = text[i+1];
-        if(c === '"' && q && n === '"'){ cell += '"'; i++; }
-        else if(c === '"'){ q = !q; }
-        else if((c === ';' || c === ',') && !q){ row.push(cell.trim()); cell = ''; }
-        else if((c === '\n' || c === '\r') && !q){
-            if(c === '\r' && n === '\n') i++;
-            row.push(cell.trim());
-            if(row.some(x => x !== '')) rows.push(row);
-            row = []; cell = '';
-        } else { cell += c; }
-    }
-    if(cell || row.length){ row.push(cell.trim()); rows.push(row); }
-    return rows;
-}
-
-// IMPORTA O CSV ASSOCIANDO DINAMICAMENTE CADA COLUNA PELO SEU NOME DE CABEÇALHO
+// IMPORTAÇÃO CSV PRECISA COM PAPAPARSE
 document.getElementById('file').addEventListener('change', e => {
     const f = e.target.files[0];
     if(!f) return;
-    const r = new FileReader();
-    r.onload = () => {
-        const text = r.result;
-        const rows = csvParse(text);
-        if(!rows.length){ alert("CSV vazio ou inválido."); return; }
-        
-        const headers = rows[0].map(h => h.trim());
-        window.originalHeaders = headers;
-        
-        // Localiza os índices reais das colunas essenciais pelo nome
-        const indexPlaqueta = headers.findIndex(h => h.toLowerCase().includes('plaqueta'));
-        const indexGrupo = headers.findIndex(h => h.toLowerCase().includes('grupo'));
 
-        const dataRows = rows.slice(1);
-        const baseMap = {};
+    Papa.parse(f, {
+        header: true,
+        skipEmptyLines: true,
+        encoding: "ISO-8859-1",
+        complete: function(results) {
+            if(!results.data || !results.data.length) {
+                alert("CSV vazio ou inválido.");
+                return;
+            }
 
-        dataRows.forEach((row) => {
-            const obj = {};
-            
-            headers.forEach((h, index) => {
-                if(h) {
-                    obj[h] = row[index] !== undefined ? row[index] : '';
+            const headers = results.meta.fields.map(h => h.trim());
+            window.originalHeaders = headers;
+
+            const baseMap = {};
+
+            results.data.forEach(row => {
+                const cleanedObj = {};
+                
+                // Mapeia cada cabeçalho exatamente ao seu valor correspondente
+                headers.forEach(h => {
+                    cleanedObj[h] = row[h] !== undefined ? String(row[h]).trim() : '';
+                });
+
+                // Busca a chave da plaqueta dinamicamente
+                const keyPlaqueta = headers.find(h => h.toLowerCase().includes('plaqueta')) || headers[0];
+                const plaquetaVal = cleanedObj[keyPlaqueta];
+
+                if(plaquetaVal) {
+                    const safeKey = sanitizeKey(plaquetaVal);
+                    baseMap[safeKey] = sanitizeObject(cleanedObj);
                 }
             });
 
-            // Garante o valor da Plaqueta dinâmica ou pega a 1ª coluna por fallback
-            const plaquetaVal = (indexPlaqueta !== -1 ? row[indexPlaqueta] : row[0]) || '';
-
-            // Garante o Nome do Grupo dinâmico se a coluna existir
-            if(indexGrupo !== -1 && row[indexGrupo]) {
-                obj['Nome Grupo'] = row[indexGrupo];
-            } else if (!obj['Nome Grupo']) {
-                obj['Nome Grupo'] = 'OUTROS';
-            }
-
-            if(plaquetaVal) {
-                const safeKey = sanitizeKey(plaquetaVal);
-                baseMap[safeKey] = sanitizeObject(obj);
-            }
-        });
-
-        db.ref('inventario_marubeni/Base_Ativos').set(baseMap).then(() => {
-            alert('Base CSV reimportada com sucesso! Todos os campos foram alinhados perfeitamente.');
-        }).catch(err => {
-            alert('Erro ao enviar base para a nuvem: ' + err.message);
-        });
-    };
-    r.readAsText(f, 'ISO-8859-1');
+            db.ref('inventario_marubeni/Base_Ativos').set(baseMap).then(() => {
+                alert('Base CSV reimportada com sucesso! Todos os dados foram alinhados sem divergências.');
+            }).catch(err => {
+                alert('Erro ao enviar base para a nuvem: ' + err.message);
+            });
+        }
+    });
 });
 
 document.getElementById('photo').addEventListener('change', e => {
@@ -384,7 +361,8 @@ function findAsset(code){
     const n = normalize(code);
 
     current = assets.find(a => {
-        const plq = a['Plaqueta'] || '';
+        const keyPlq = Object.keys(a).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
+        const plq = a[keyPlq] || '';
         return normalize(plq) === n || String(plq).trim() === code.trim();
     });
 
@@ -403,8 +381,8 @@ function findAsset(code){
 
     manualFields.classList.add('hidden');
     
-    // EXTRAÇÃO DINÂMICA E EXATA DAS INFORMAÇÕES
-    const plaquetaVal = current['Plaqueta'] || '';
+    // EXTRAÇÃO EXATA DAS INFORMAÇÕES PELOS CABEÇALHOS DA PLANILHA
+    const plaquetaVal = current['Plaqueta'] || current[Object.keys(current).find(k => k.toLowerCase().includes('plaqueta'))] || '';
     const descVal = current['Descrição do Bem'] || current['Descrição'] || '';
     const prodVal = current['Nome Produto'] || current['Código Produto'] || '';
     const nomeGrupoCol = current['Nome Grupo'] || 'OUTROS';
@@ -431,7 +409,8 @@ function register(){
 
     if(!inv || !loc){ alert('Informe o responsável e a localização.'); return; }
 
-    const plqVal = current['Plaqueta'];
+    const keyPlq = Object.keys(current).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
+    const plqVal = current[keyPlq];
 
     if(current.IsManual){
         const desc = document.getElementById('manualDesc').value.trim();
@@ -482,7 +461,8 @@ function register(){
 function renderLog(){
     document.getElementById('count').innerHTML = `<p><b>${records.length}</b> conferência(s) sincronizada(s)</p>`;
     document.getElementById('log').innerHTML = records.slice().reverse().map(r => {
-        const plq = r['Plaqueta'] || '';
+        const keyPlq = Object.keys(r).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
+        const plq = r[keyPlq] || '';
         const desc = r['Descrição do Bem'] || r['Descrição'] || '';
         const grupo = r['Nome Grupo'] || '-';
 
@@ -536,7 +516,8 @@ function renderGallery(){
             img.onerror = () => { img.style.display = 'none'; };
             card.appendChild(img);
 
-            const plq = item['Plaqueta'] || '';
+            const keyPlq = Object.keys(item).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
+            const plq = item[keyPlq] || '';
             const desc = item['Descrição do Bem'] || item['Nome Produto'] || '';
 
             const info = document.createElement('div');
@@ -569,7 +550,8 @@ function downloadZip(){
         const grupoRaw = item['Nome Grupo'] || 'OUTROS';
         const grupoClean = String(grupoRaw).replace(/[/\\?%*:|"<>]/g, '_').trim();
         
-        const plq = item['Plaqueta'] || 'SemPlaqueta';
+        const keyPlq = Object.keys(item).find(k => k.toLowerCase().includes('plaqueta')) || 'Plaqueta';
+        const plq = item[keyPlq] || 'SemPlaqueta';
         const base64Data = item['FotoBase64'].replace(/^data:image\/[^;]+;base64,/, '');
         
         const filename = `${grupoClean}/Plaqueta_${plq}_${index + 1}.jpg`;
