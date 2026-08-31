@@ -141,7 +141,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <tr>
 <th>Plaqueta</th>
 <th>Descrição</th>
-<th>Nome Grupo (Col O)</th>
+<th>Nome Grupo </th>
 <th>Status</th>
 <th>Localização</th>
 <th>Data/Hora</th>
@@ -157,7 +157,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px;borde
 <div id="tabGaleria" class="hidden">
 <div class="card">
 <h3>🖼️ Galeria de Fotos por Nome do Grupo</h3>
-<p class="muted">Fotos organizadas em pastas pelo Nome do Grupo da planilha (Coluna O).</p>
+<p class="muted">Fotos organizadas em pastas pelo Nome do Grupo da planilha.</p>
 <button class="success" onclick="downloadZip()">⚡ Baixar Todas as Fotos (.ZIP)</button>
 <div id="galleryContainer"></div>
 </div>
@@ -286,7 +286,7 @@ function csvParse(text){
     return rows;
 }
 
-// IMPORTA O CSV ASSOCIANDO DIRETA E EXATAMENTE CADA COLUNA PELO SEU NOME
+// IMPORTA O CSV ASSOCIANDO DINAMICAMENTE CADA COLUNA PELO SEU NOME DE CABEÇALHO
 document.getElementById('file').addEventListener('change', e => {
     const f = e.target.files[0];
     if(!f) return;
@@ -299,20 +299,31 @@ document.getElementById('file').addEventListener('change', e => {
         const headers = rows[0].map(h => h.trim());
         window.originalHeaders = headers;
         
+        // Localiza os índices reais das colunas essenciais pelo nome
+        const indexPlaqueta = headers.findIndex(h => h.toLowerCase().includes('plaqueta'));
+        const indexGrupo = headers.findIndex(h => h.toLowerCase().includes('grupo'));
+
         const dataRows = rows.slice(1);
         const baseMap = {};
 
-        dataRows.forEach(row => {
+        dataRows.forEach((row) => {
             const obj = {};
+            
             headers.forEach((h, index) => {
-                if(h) obj[h] = row[index] !== undefined ? row[index] : '';
+                if(h) {
+                    obj[h] = row[index] !== undefined ? row[index] : '';
+                }
             });
 
-            // Captura explicitamente o Nome do Grupo da Coluna O (índice 14)
-            const nomeGrupoColO = row[14] || obj['Nome Grupo'] || 'OUTROS';
-            obj['Nome Grupo'] = nomeGrupoColO;
+            // Garante o valor da Plaqueta dinâmica ou pega a 1ª coluna por fallback
+            const plaquetaVal = (indexPlaqueta !== -1 ? row[indexPlaqueta] : row[0]) || '';
 
-            const plaquetaVal = row[0] || obj['Plaqueta'] || '';
+            // Garante o Nome do Grupo dinâmico se a coluna existir
+            if(indexGrupo !== -1 && row[indexGrupo]) {
+                obj['Nome Grupo'] = row[indexGrupo];
+            } else if (!obj['Nome Grupo']) {
+                obj['Nome Grupo'] = 'OUTROS';
+            }
 
             if(plaquetaVal) {
                 const safeKey = sanitizeKey(plaquetaVal);
@@ -321,7 +332,7 @@ document.getElementById('file').addEventListener('change', e => {
         });
 
         db.ref('inventario_marubeni/Base_Ativos').set(baseMap).then(() => {
-            alert('Base CSV reimportada com sucesso! O "Nome Grupo" foi atualizado na Nuvem.');
+            alert('Base CSV reimportada com sucesso! Todos os campos foram alinhados perfeitamente.');
         }).catch(err => {
             alert('Erro ao enviar base para a nuvem: ' + err.message);
         });
@@ -392,11 +403,11 @@ function findAsset(code){
 
     manualFields.classList.add('hidden');
     
-    // EXTRAÇÃO EXATA DAS INFORMAÇÕES
+    // EXTRAÇÃO DINÂMICA E EXATA DAS INFORMAÇÕES
     const plaquetaVal = current['Plaqueta'] || '';
-    const descVal = current['Descrição do Bem'] || '';
+    const descVal = current['Descrição do Bem'] || current['Descrição'] || '';
     const prodVal = current['Nome Produto'] || current['Código Produto'] || '';
-    const nomeGrupoCol6 = current['Nome Grupo'] || 'OUTROS';
+    const nomeGrupoCol = current['Nome Grupo'] || 'OUTROS';
     const centroCustoVal = current['Nome Centro Custo'] || current['Cód. Centro Custo'] || '0';
     const situacaoVal = current['Fantasia'] || current['Situação'] || 'MARUBENI S.A.';
 
@@ -404,7 +415,7 @@ function findAsset(code){
     document.getElementById('assetInfo').innerHTML = `
         <div><b>Descrição do Bem:</b> ${descVal}</div>
         <div><b>Nome Produto:</b> ${prodVal}</div>
-        <div><b>Nome Grupo:</b> ${nomeGrupoCol6}</div>
+        <div><b>Nome Grupo:</b> ${nomeGrupoCol}</div>
         <div><b>Nome Centro Custo:</b> ${centroCustoVal}</div>
         <div><b>Situação:</b> ${situacaoVal}</div>
     `;
@@ -472,7 +483,7 @@ function renderLog(){
     document.getElementById('count').innerHTML = `<p><b>${records.length}</b> conferência(s) sincronizada(s)</p>`;
     document.getElementById('log').innerHTML = records.slice().reverse().map(r => {
         const plq = r['Plaqueta'] || '';
-        const desc = r['Descrição do Bem'] || '';
+        const desc = r['Descrição do Bem'] || r['Descrição'] || '';
         const grupo = r['Nome Grupo'] || '-';
 
         return `
@@ -500,7 +511,6 @@ function renderGallery(){
         return;
     }
 
-    // Agrupa todos os itens pelo Nome do Grupo da planilha
     const groups = {};
     itemsWithPhoto.forEach(r => {
         const grupo = r['Nome Grupo'] || 'OUTROS / SEM GRUPO';
@@ -511,7 +521,7 @@ function renderGallery(){
     for(const grupo in groups){
         const block = document.createElement('div');
         block.className = 'family-block';
-        block.innerHTML = `<div class="family-title">📂 Pasta Grupo (Col O): <b>${grupo}</b></div>`;
+        block.innerHTML = `<div class="family-title">📂 Pasta Grupo: <b>${grupo}</b></div>`;
 
         const grid = document.createElement('div');
         grid.className = 'gallery-grid';
@@ -548,7 +558,7 @@ function renderGallery(){
     }
 }
 
-// CRIA O ARQUIVO .ZIP COM PASTAS SEPARADAS POR NOME DO GRUPO (COLUNA O)
+// CRIA O ARQUIVO .ZIP COM PASTAS SEPARADAS POR NOME DO GRUPO
 function downloadZip(){
     const itemsWithPhoto = records.filter(r => r['FotoBase64'] && String(r['FotoBase64']).startsWith('data:image/'));
     if(!itemsWithPhoto.length){ alert('Não há fotos para exportar.'); return; }
@@ -556,14 +566,12 @@ function downloadZip(){
     const zip = new JSZip();
     
     itemsWithPhoto.forEach((item, index) => {
-        // Pega o Nome do Grupo e limpa caracteres inválidos para pastas
         const grupoRaw = item['Nome Grupo'] || 'OUTROS';
         const grupoClean = String(grupoRaw).replace(/[/\\?%*:|"<>]/g, '_').trim();
         
         const plq = item['Plaqueta'] || 'SemPlaqueta';
         const base64Data = item['FotoBase64'].replace(/^data:image\/[^;]+;base64,/, '');
         
-        // Caminho dentro do ZIP: PastaDoGrupo/Plaqueta_NUMERO_INDEX.jpg
         const filename = `${grupoClean}/Plaqueta_${plq}_${index + 1}.jpg`;
         
         zip.file(filename, base64Data, {base64: true});
